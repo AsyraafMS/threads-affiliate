@@ -1,0 +1,65 @@
+name: threads-affiliate
+
+x-app: &app
+  build: .
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/threads_affiliate
+    REDIS_URL: redis://redis:6379
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: threads_affiliate
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports: ["127.0.0.1:5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d threads_affiliate"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    # noeviction: BullMQ job data must never be silently evicted.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    ports: ["127.0.0.1:6379:6379"]
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+
+  migrate:
+    <<: *app
+    command: ["node", "src/db/migrate.ts"]
+    restart: "no"
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  server:
+    <<: *app
+    command: ["node", "src/server.ts"]
+    ports: ["127.0.0.1:${HOST_PORT:-3000}:3000"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
+      interval: 10s
+      retries: 3
+
+  worker:
+    <<: *app
+    command: ["node", "src/worker.ts"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+
+volumes:
+  pgdata:
+  redisdata:
